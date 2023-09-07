@@ -216,7 +216,7 @@ impl Message {
                 }
                 ContentType::TextEventPlain => {
                     if let Some(body) = &body {
-                        let mut ed: EventData = HashMap::new();
+                        let mut ed: EventData = Map::new();
 
                         body.split("\n").for_each(|line| {
                             if let Some((k, v)) = parse_header_line(line) {
