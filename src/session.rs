@@ -1,6 +1,7 @@
+use crate::event::EventHandler;
 use crate::message::FormatType;
 use crate::message::Message;
-use anyhow::{Ok, Result};
+use anyhow::Result;
 use tokio::{
     io::{AsyncWriteExt, BufReader, BufWriter},
     net::{
@@ -8,7 +9,6 @@ use tokio::{
         TcpStream,
     },
 };
-
 use tracing::{error, info};
 
 #[derive(Debug)]
@@ -28,13 +28,11 @@ impl Session {
 
     #[tracing::instrument]
     pub async fn send(&mut self, data: String) -> Result<()> {
-        let b = data.trim().as_bytes();
-        let new_line = b"\n\n";
-        self.writer.write_all(b).await?;
+        let b = format!("{}\n\n", data.trim());
+
+        self.writer.write_all(b.as_bytes()).await?;
         self.writer.flush().await?;
 
-        self.writer.write_all("\r\n\r\n".as_bytes()).await?;
-        self.writer.flush().await?;
         Ok(())
     }
 
@@ -60,8 +58,8 @@ impl Session {
     }
 
     #[tracing::instrument]
-    pub async fn sendmsg(&mut self, msg: Message) -> Result<()> {
-        let cmd = format!("sendmsg {}", msg.to_string());
+    pub async fn sendmsg(&mut self, msg: String) -> Result<()> {
+        let cmd = format!("sendmsg {}", msg);
         self.send(cmd).await?;
         Ok(())
     }

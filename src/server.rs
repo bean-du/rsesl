@@ -1,25 +1,27 @@
 use crate::session::Session;
 use anyhow::Result;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::Mutex;
+use tracing::{debug, error, info, trace, warn};
 
 pub struct Server {
     listener: TcpListener,
     addr: String,
-    conns: HashMap<String, Arc<Mutex<Session>>>,
+    tx: Sender<Arc<Mutex<Session>>>,
+    rx: Receiver<Arc<Mutex<Session>>>,
 }
 
-// impl Server {
 impl Server {
     pub async fn new(addr: String) -> Result<Self> {
         let listener = TcpListener::bind(addr.clone()).await?;
-        let conns: HashMap<String, Arc<Mutex<Session>>> = HashMap::new();
+        let (tx, rx) = tokio::sync::mpsc::channel::<Arc<Mutex<Session>>>(32);
         let s = Server {
             listener,
             addr,
-            conns,
+            tx,
+            rx,
         };
         Ok(s)
     }
@@ -27,28 +29,25 @@ impl Server {
     pub async fn run(&mut self) {
         loop {
             let (stream, addr) = self.listener.accept().await.unwrap();
-            println!("Accepted connection from {}", addr);
+            info!("Accepted connection from {}", addr);
             let conn = Arc::new(Mutex::new(Session::new(stream).await));
 
-            // let conn_clone = conn.clone();
-            // tokio::spawn(async move {
-            //     loop {
-            //         let msg = conn_clone.lock().await.get_message().await;
-            //         // handle message
-            //         // self.handle_message(msg).await;
-            //         match msg {
-            //             Ok(m) => {
-            //                 println!("Received message: {:?}", m);
-            //             }
-            //             Err(e) => {
-            //                 println!("Error: {:?}", e);
-            //                 continue;
-            //             }
-            //         }
-            //     }
-            // });
+            self.tx.send(conn).await.unwrap();
+        }
+    }
 
-            self.conns.insert(addr.to_string(), conn);
+    pub async fn on_session<F>(&mut self, session_handle: F)
+    where
+        F: Fn(Arc<Mutex<Session>>) + Send + Sync + 'static + Copy,
+    {
+        loop {
+            tokio::select! {
+                Some(conn) = self.rx.recv() => {
+                    tokio::spawn(async move {
+                        session_handle(conn);
+                    });
+                }
+            }
         }
     }
 }

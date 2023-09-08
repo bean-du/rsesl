@@ -10,8 +10,6 @@ use tokio::{
 use tracing::{debug, error, warn};
 use urlencoding::decode;
 
-type MIMEHeader = HashMap<String, Vec<String>>;
-
 #[derive(thiserror::Error, Debug)]
 pub enum MsgError {
     /// Not enough data is available to parse a message
@@ -235,6 +233,14 @@ impl Message {
             header: Some(header),
             event_data,
         })
+    }
+
+    pub fn get_uuid(&mut self) -> Option<String> {
+        if let Some(ed) = &self.event_data {
+            return Some(ed.get_header("Unique-ID".to_string()));
+        }
+
+        None
     }
 
     #[tracing::instrument]
