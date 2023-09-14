@@ -1,4 +1,5 @@
 use crate::event::EventData;
+use crate::event::EventHandler;
 use anyhow::{Error, Result};
 use serde_json::{Map, Value};
 use std::{collections::HashMap, fmt::Display, str::FromStr};

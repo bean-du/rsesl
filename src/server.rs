@@ -26,28 +26,10 @@ impl Server {
         Ok(s)
     }
 
-    pub async fn run(&mut self) {
-        loop {
-            let (stream, addr) = self.listener.accept().await.unwrap();
-            info!("Accepted connection from {}", addr);
-            let conn = Arc::new(Mutex::new(Session::new(stream).await));
-
-            self.tx.send(conn).await.unwrap();
-        }
-    }
-
-    pub async fn on_session<F>(&mut self, session_handle: F)
-    where
-        F: Fn(Arc<Mutex<Session>>) + Send + Sync + 'static + Copy,
-    {
-        loop {
-            tokio::select! {
-                Some(conn) = self.rx.recv() => {
-                    tokio::spawn(async move {
-                        session_handle(conn);
-                    });
-                }
-            }
-        }
+    pub async fn accept(&mut self) -> Result<Arc<Mutex<Session>>> {
+        let (stream, addr) = self.listener.accept().await?;
+        info!("Accepted connection from {}", addr);
+        let conn = Arc::new(Mutex::new(Session::new(stream).await));
+        Ok(conn)
     }
 }

@@ -1,4 +1,3 @@
-use crate::event::EventHandler;
 use crate::message::FormatType;
 use crate::message::Message;
 use anyhow::Result;
@@ -93,6 +92,13 @@ impl Session {
         }
         info!("Filter set successfully");
         Ok(())
+    }
+
+    pub async fn get_uuid(&mut self) -> Result<String> {
+        let cmd = "create_uuid".to_string();
+        let mut msg = self.api(cmd).await?;
+        let uuid = msg.get_header("body");
+        Ok(uuid)
     }
 
     #[tracing::instrument]
