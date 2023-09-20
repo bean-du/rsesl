@@ -1,6 +1,7 @@
 use crate::event::EventData;
 use crate::event::EventHandler;
 use anyhow::{Error, Result};
+use serde::de;
 use serde_json::{Map, Value};
 use std::{collections::HashMap, fmt::Display, str::FromStr};
 use thiserror;
@@ -16,6 +17,19 @@ pub enum MsgError {
     /// Not enough data is available to parse a message
     #[error("No data to parse")]
     Incomplete,
+
+    #[error("Failed to read message from socket")]
+    ReadFailed,
+
+    /// connection closed by remote
+    #[error("Connection closed")]
+    ConnectionClosed,
+
+    #[error("Failed to parse message body")]
+    BodyParseFailed,
+
+    #[error("Got -ERR response")]
+    ErrResponse(String),
 
     /// Invalid message encoding
     #[error(transparent)]
@@ -121,7 +135,7 @@ impl Message {
             match r.read_line(&mut line).await {
                 Ok(n) if n == 0 => {
                     error!("connection closed");
-                    return Err(anyhow::anyhow!("connection closed"));
+                    return Err(MsgError::ConnectionClosed.into());
                 }
                 Ok(_) => {
                     if line.trim().is_empty() {
@@ -136,13 +150,14 @@ impl Message {
                 }
                 Err(e) => {
                     error!("failed to read from socket; err = {:?}", e);
-                    return Err(anyhow::anyhow!("failed to read from socket"));
+                    return Err(MsgError::ReadFailed.into());
                 }
             };
         }
+        let h = header.clone();
 
         // parse Content-Length
-        if let Some(content_length_str) = header.get("Content-Length") {
+        if let Some(content_length_str) = h.get("Content-Length") {
             if let Ok(length) = content_length_str.parse::<usize>() {
                 content_length = Some(length);
             }
@@ -157,7 +172,7 @@ impl Message {
         }
 
         // get Content-Type
-        if let Some(content_type) = header.get("Content-Type") {
+        if let Some(content_type) = h.get("Content-Type") {
             let msg_type = match ContentType::from_str(&content_type) {
                 Ok(t) => {
                     // debug!("Content-Type: {:?}", t);
@@ -170,58 +185,94 @@ impl Message {
             };
             // decode if value is url encoded and Content-Type is not text/event-json
             if msg_type != ContentType::TextEventJson {
-                if let Some(data) = body {
-                    let s: String = decode(&data)?.to_string();
-                    body = Some(s);
+                if let Some(data) = &body {
+                    if data.contains("-ERR") {
+                        error!("Received error json response body {}", data);
+                        let mut ed = EventData::new();
+                        ed.insert("Reply-Text".to_string(), Value::String(data.to_string()));
+                        event_data = Some(ed);
+                    } else {
+                        let s: String = decode(&data)?.to_string();
+                        body = Some(s);
+                    }
                 }
             }
 
             match msg_type {
                 ContentType::TextEventJson => {
                     if let Some(body) = &body {
-                        // parse body
-                        match serde_json::from_str::<EventData>(&body) {
-                            Ok(ed) => {
-                                event_data = Some(ed);
-                            }
-                            Err(e) => {
-                                error!("failed to parse body; err = {:?}", e);
-                                return Err(anyhow::anyhow!("failed to parse body"));
+                        if body.contains("-ERR") {
+                            // parse error body
+                            let mut ed = EventData::new();
+                            ed.insert("Reply-Text".to_string(), Value::String(body.to_string()));
+                            event_data = Some(ed);
+                        } else {
+                            // parse normal body
+                            match serde_json::from_str::<EventData>(&body) {
+                                Ok(ed) => {
+                                    event_data = Some(ed);
+                                }
+                                Err(e) => {
+                                    error!("failed to parse body; err = {:?}", e);
+                                    return Err(MsgError::BodyParseFailed.into());
+                                }
                             }
                         }
                     }
                 }
                 ContentType::ApiResponse => {
                     if let Some(reply_text) = header.get("Reply-Text") {
-                        if reply_text.contains("-ERR") {
-                            return Err(anyhow::anyhow!("Received error response"));
+                        if let Some(body) = &body {
+                            if body.contains("-ERR") {
+                                // return Err(MsgError::ErrResponse(reply_text.to_string()).into());
+                                error!("Received error api response {}", body);
+                                let mut ed = EventData::new();
+                                ed.insert(
+                                    "Reply-Text".to_string(),
+                                    Value::String(reply_text.to_string()),
+                                );
+                                event_data = Some(ed);
+                            } else {
+                                debug!("Received api response {:?}", body);
+                                // todo: parse api response body
+                            }
                         }
                     }
                 }
                 ContentType::CommandReply => {
+                    if let Some(reply_text) = header.get("Reply-Text") {
+                        if reply_text.contains("-ERR") {
+                            error!("Received command header error response {}", reply_text);
+                            // return Err(MsgError::ErrResponse(reply_text.to_string()).into());
+                        }
+                    }
                     if let Some(body) = &body {
                         if body.contains("-ERR") {
-                            error!("Received error response");
-                            return Err(anyhow::anyhow!("Received error response"));
+                            error!("Received command body error response {}", body);
+                            // return Err(MsgError::ErrResponse(body.to_string()).into());
                         }
                     }
                 }
                 ContentType::TextDisconnectNotice => {
-                    for (k, v) in header {
+                    for (k, v) in h {
                         debug!("Message Header {}: {}", k, v);
                     }
                     error!("Received disconnect notice");
-                    return Err(anyhow::anyhow!("Received disconnect notice"));
+                    // return Err(MsgError::ConnectionClosed.into());
                 }
                 ContentType::TextEventPlain => {
                     if let Some(body) = &body {
                         let mut ed: EventData = Map::new();
 
-                        body.split("\n").for_each(|line| {
-                            if let Some((k, v)) = parse_header_line(line) {
-                                ed.insert(k.to_string(), Value::String(v.to_string()));
-                            }
-                        });
+                        if body.contains("-ERR") {
+                            ed.insert("Reply-Text".to_string(), Value::String(body.to_string()));
+                        } else {
+                            body.split("\n").for_each(|line| {
+                                if let Some((k, v)) = parse_header_line(line) {
+                                    ed.insert(k.to_string(), Value::String(v.to_string()));
+                                }
+                            });
+                        }
 
                         event_data = Some(ed)
                     }
